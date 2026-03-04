@@ -1,0 +1,27 @@
+# === Python 虚拟环境与缓存 ===
+.venv/
+__pycache__/
+*.py[cod]
+*$py.class
+
+# === 环境变量与机密信息 (绝对不能上传!) ===
+.env
+
+# === 前端依赖 ===
+web-ui/node_modules/
+web-ui/dist/
+
+# === 数据库文件 ===
+*.db
+*.sqlite3
+
+# === 自动生成的媒体文件 ===
+*.mp4
+*.mp3
+*.jpg
+*.wav
+data.json
+latest_report.json
+
+# === VS Code 配置文件 ===
+.vscode/
