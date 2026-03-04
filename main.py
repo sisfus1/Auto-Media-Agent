@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 import os
 import uuid
 import asyncio # 确保有这个
@@ -7,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware # 【新增】导入跨域中
 from pydantic import BaseModel
 import uvicorn
 from fastapi.responses import FileResponse
+from app.db.vector_db import VectorDBManager
 # (确保你之前已经导入了 os)
 
 # 导入你的服务逻辑
@@ -44,8 +44,9 @@ def run_video_generation_pipeline(task_id: str):
         db = DatabaseManager()
         llm = LLMService()
         media = MediaService()
+        vector_db = VectorDBManager() # 【新增】实例化向量大脑
 
-        # 1. 获取数据
+        # 1. 获取最新数据 (传统数据库)
         recent_news = db.get_recent_news(limit=5)
         if not recent_news:
             TASK_STORE[task_id] = "FAILED: 数据库为空"
@@ -53,11 +54,35 @@ def run_video_generation_pipeline(task_id: str):
             
         news_for_ai = [f"- {row[0]}: {row[1]}" for row in recent_news]
         
-        # 2. AI 分析
-        report = asyncio.run(llm.generate_daily_report(news_for_ai))
+        # ---------------------------------------------------------
+        # 【新增的 RAG 核心逻辑】
+        # 2.A 将今日新闻转化为向量存入大脑 (形成长期记忆)
+        news_for_vector = []
+        for row in recent_news:
+            news_for_vector.append({
+                "id": str(row[0]),  # 简单起见，用标题当唯一 ID
+                "text": f"标题: {row[0]} 内容: {row[1]}",
+                "metadata": {"source": "daily_fetch"}
+            })
+        vector_db.add_news_to_vector_db(news_for_vector)
+
+        # 2.B 从大脑中检索与今天头条最相关的历史记忆
+        # 我们用今天的第一条新闻标题作为查询词去搜索历史
+        query_keyword = recent_news[0][0] if recent_news else "AI人工智能最新进展"
+        historical_docs = vector_db.search_related_news(query_text=query_keyword, n_results=3)
+        historical_context = "\n".join(historical_docs) if historical_docs else "暂无关联历史。"
+        # ---------------------------------------------------------
+
+        # 3. 带着历史记忆，调用大模型生成深度报告
+        import asyncio
+        report = asyncio.run(llm.generate_daily_report(news_for_ai, historical_context=historical_context))
+        
         if "top_news" not in report:
             TASK_STORE[task_id] = "FAILED: AI 生成报告失败"
             return
+            
+        # ... 接下来的拼接脚本、生成语音和视频代码保持完全不变 ...
+        # script = f"大家好，今天是{report.get('date')}。..."
             
         # 3. 拼接口播
         script = f"大家好，今天是{report.get('date')}。{report.get('editor_comment')}。"
@@ -127,176 +152,3 @@ async def get_video(filename: str):
 if __name__ == "__main__":
     # 启动命令: python api_main.py (或者 uvicorn api_main:app --reload)
     uvicorn.run(app, host="0.0.0.0", port=8000)
-=======
-import feedparser
-import os
-import json
-import requests
-import datetime
-from openai import OpenAI
-from dotenv import load_dotenv
-
-# 1. 加载环境变量
-load_dotenv()
-
-# 2. 配置 DeepSeek 客户端 (注意 /v1 尾缀)
-client = OpenAI(
-    api_key=os.getenv("OPENAI_API_KEY"), 
-    base_url="https://api.deepseek.com/v1"
-)
-
-# 3. 配置 PushPlus
-PUSH_TOKEN = os.getenv("PUSHPLUS_TOKEN")
-
-# 4. 资讯源配置 (保留 Hacker News 等高质量源)
-RSS_URLS = [
-    "https://www.theverge.com/rss/ai/index.xml", 
-    "https://news.ycombinator.com/rss",          
-    "https://openai.com/blog/rss.xml",           
-    "https://dev.to/feed/tag/ai",                
-    "https://www.artificialintelligence-news.com/feed/",
-    "https://techcrunch.com/category/artificial-intelligence/feed/",
-]
-
-def fetch_rss_data():
-    """阶段一：海量抓取 (ETL - Extract)"""
-    print("🌍 正在扫描全球 AI 资讯...")
-    raw_items = []
-    
-    for url in RSS_URLS:
-        try:
-            # 增加 User-Agent 防止被某些网站拦截
-            feed = feedparser.parse(url, agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
-            # 每个源多抓一点，给 AI 足够的筛选空间
-            for entry in feed.entries[:10]: 
-                # 简单清洗：必须包含 ai 关键词 (针对 HN 这种综合源)
-                if 'ycombinator' in url:
-                    keywords = ['ai', 'gpt', 'llm', 'model', 'diffusion', 'cursor', 'windsurf']
-                    if not any(k in entry.title.lower() for k in keywords):
-                        continue
-                
-                raw_items.append({
-                    "title": entry.title,
-                    "link": entry.link,
-                    "summary": entry.summary[:200] if hasattr(entry, 'summary') else entry.title
-                })
-        except Exception as e:
-            print(f"⚠️ 源读取失败 {url}: {e}")
-            
-    print(f"📥 共收集到 {len(raw_items)} 条原始资讯，准备发送给 DeepSeek...")
-    return raw_items
-
-def analyze_and_structure(raw_items):
-    """阶段二：AI 思考与结构化 (ETL - Transform)"""
-    if not raw_items:
-        return None
-
-    # 构造 Prompt：强制要求返回 JSON 格式
-    prompt = f"""
-    你是一个 AI 资讯数据库管理员。请分析以下新闻，筛选出**最重要的 10 条**，并**严格输出标准的 JSON 格式**。
-
-    【处理要求】：
-    1. **去重与筛选**：优先选择模型发布(DeepSeek/OpenAI/Claude)、大厂动态、GitHub高星项目。
-    2. **分类标准**：
-       - "🔥头条": 最重大的 1-2 条新闻。
-       - "🛠️工具": AI 编程工具、效率工具、开源库。
-       - "🎨视觉": 文生图、视频生成、设计类。
-       - "📰行业": 商业新闻、政策、观点。
-    3. **JSON 结构**：
-       返回一个对象，包含 key "news_list"，其值为一个列表。列表中的每个元素包含：
-       - "title": 中文标题 (简练有力)
-       - "summary": 中文摘要 (30字以内)
-       - "category": 上述分类之一
-       - "score": 热度打分 (1-10的整数)
-       - "link": 原始链接
-    
-    【输入数据】：
-    {str(raw_items)}
-    """
-
-    try:
-        response = client.chat.completions.create(
-            model="deepseek-chat", # 使用 V3 模型
-            messages=[{"role": "user", "content": prompt}],
-            response_format={ 'type': 'json_object' }, # 🔥 关键：强制 JSON 模式
-            temperature=0.3
-        )
-        # 将 AI 返回的字符串转换为 Python 字典
-        structured_data = json.loads(response.choices[0].message.content)
-        return structured_data.get("news_list", [])
-    except Exception as e:
-        print(f"❌ AI 分析失败: {e}")
-        return None
-
-def save_database(news_list):
-    """阶段三：存入数据库 (ETL - Load)"""
-    if not news_list:
-        return
-    
-    # 构造完整的数据库记录
-    db_record = {
-        "update_time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
-        "date": datetime.date.today().strftime("%Y-%m-%d"),
-        "total": len(news_list),
-        "news": news_list
-    }
-
-    # 写入 data.json (这就相当于你的后端数据库文件)
-    with open("data.json", "w", encoding="utf-8") as f:
-        json.dump(db_record, f, ensure_ascii=False, indent=2)
-    
-    print(f"💾 数据库已更新: data.json (包含 {len(news_list)} 条记录)")
-    return db_record
-
-def push_notification(db_record):
-    """阶段四：消息推送 (Notification)"""
-    if not PUSH_TOKEN or not db_record:
-        return
-
-    # 构造推送内容 (简化版，引导用户看“App”)
-    today = db_record['date']
-    news = db_record['news']
-    
-    # 这里我们生成一段 HTML，PushPlus 支持 HTML 渲染
-    # 这只是一个“通知”，详细内容以后在前端网页看
-    html_content = f"<h3>🤖 AI 日报已更新 ({today})</h3>"
-    html_content += "<p>以下是今日精选 Top 5：</p><ul>"
-    
-    # 只取前 5 条作为摘要
-    for item in news[:5]:
-        icon = item['category'][:1] # 取 Emoji
-        html_content += f"<li>{icon} <b>{item['title']}</b><br><span style='font-size:12px;color:#666'>{item['summary']}</span></li>"
-    
-    html_content += "</ul>"
-    html_content += f"<br><a href='http://www.pushplus.plus/'>👉 点击查看完整图文版 (请配置GitHub Pages)</a>"
-
-    url = "http://www.pushplus.plus/send"
-    data = {
-        "token": PUSH_TOKEN,
-        "title": f"AI 日报更新 ({today})",
-        "content": html_content,
-        "template": "html" # 使用 HTML 模板
-    }
-    
-    try:
-        requests.post(url, json=data)
-        print("✅ 推送成功！")
-    except Exception as e:
-        print(f"❌ 推送失败: {e}")
-
-if __name__ == "__main__":
-    # 1. 获取原始数据
-    raw_data = fetch_rss_data()
-    
-    # 2. AI 处理并结构化
-    structured_news = analyze_and_structure(raw_data)
-    
-    # 3. 存入本地数据库 (data.json)
-    if structured_news:
-        record = save_database(structured_news)
-        
-        # 4. 发送通知
-        push_notification(record)
-    else:
-        print("⚠️ 今日无有效数据，跳过更新。")
->>>>>>> 26174d9a8be5a7448b6af247006c1f895ac549ff
