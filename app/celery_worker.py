@@ -47,17 +47,43 @@ def run_video_generation_pipeline(task_id: str):
         bg_image_path = os.path.join(OUTPUT_DIR, f"{base_filename}.jpg")
         video_file_path = os.path.join(OUTPUT_DIR, f"{base_filename}.mp4")
 
-        recent_news = db.get_recent_news(limit=5)
-        if not recent_news:
-            redis_client.set(task_id, "FAILED: 数据库为空")
-            return
-            
-        news_for_ai = [f"- {row[0]}: {row[1]}" for row in recent_news]
+        from langchain_community.tools import DuckDuckGoSearchResults
+
+        # 1. 强制时间注入：获取服务器当前的真实时间 (精确到年月日)
+        current_date_str = datetime.now().strftime("%Y年%m月%d日")
+        print(f"[{task_id}] ⏳ 正在为 Agent 注入当前时间锚点: {current_date_str}")
+
+        # 2. 唤醒实时搜索引擎
+        search_tool = DuckDuckGoSearchResults()
         
-        news_for_vector = [{"id": str(row[0]), "text": f"标题: {row[0]} 内容: {row[1]}", "metadata": {"source": "daily_fetch"}} for row in recent_news]
+        # 3. 构造极度精准的搜索关键词，强制圈定时间和领域
+        search_query = f"{current_date_str} 人工智能 AI 大模型 OpenAI 最新重大新闻"
+        print(f"[{task_id}] 🌐 正在全网搜寻最新情报: {search_query}")
+        
+        try:
+            # 执行实时搜索，拿回最新的网页摘要
+            live_news_str = search_tool.run(search_query)
+            
+            # 将搜索到的非结构化文本，包装成大模型需要的列表格式
+            # 这里我们顺便在提示词开头强制打上时间钢印
+            news_for_ai = [
+                f"【系统强制指令】：今天是 {current_date_str}。请务必在开场白中准确播报今天的日期。",
+                f"【今日全网最新实时资讯抓取结果】：\n{live_news_str}"
+            ]
+        except Exception as e:
+            redis_client.set(task_id, f"FAILED: 实时搜索引擎故障 - {str(e)}")
+            return
+        
+        # 4. 将刚刚搜到的公网情报，作为最新记忆刻入大脑
+        news_for_vector = [{
+            "id": f"search_{task_id}", 
+            "text": live_news_str, 
+            "metadata": {"source": "duckduckgo", "date": current_date_str}
+        }]
         vector_db.add_news_to_vector_db(news_for_vector)
 
-        query_keyword = recent_news[0][0] if recent_news else "AI"
+        # 5. 从深海记忆库中，捞取与 AI 前沿相关的历史前情提要
+        query_keyword = "AI 人工智能 大模型 突破"
         historical_docs = vector_db.search_related_news(query_text=query_keyword, n_results=3)
         historical_context = "\n".join(historical_docs) if historical_docs else "暂无关联历史。"
 

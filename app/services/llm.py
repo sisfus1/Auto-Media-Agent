@@ -1,5 +1,6 @@
 import os
 import json
+from datetime import datetime  # 👈 【核心修复 1】：引入系统时间模块
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
@@ -26,7 +27,6 @@ class LLMService:
         )
 
     async def generate_daily_report(self, news_text_list: list, historical_context: str = "") -> dict:
-        # ... 这里面剩下的代码完全保持不变 ...
         """
         使用 LangChain 链式调用生成日报
         """
@@ -37,52 +37,57 @@ class LLMService:
 
         content_block = "\n".join(news_text_list)
         
+        # 👈 【核心修复 2】：获取服务器当前的真实时间锚点
+        today_str = datetime.now().strftime("%Y年%m月%d日")
+        print(f"🕒 注入时间钢印: {today_str}")
+        
         # 2. 构建结构化的 Prompt Template (模板)
         # LangChain 允许我们用大括号 {变量名} 优雅地挖坑，稍后再填入数据
         prompt_template = ChatPromptTemplate.from_messages([
-            ("system", "你是一个专业的科技主编。必须严格输出符合要求的 JSON 格式。"),
-            ("user", """
-            请分析以下今日抓取到的 AI 新闻，并结合我提供的【历史背景库】，生成一份 JSON 格式的深度日报。
+    ("system", "你是一个专业的科技主编，拥有绝对精准的时间观念。你必须严格按系统给定的当天时间进行新闻梳理，绝不能使用过时的记忆，并严格输出 JSON 格式。"),
+    ("user", """
+    【系统强制时间锚点】：今天是 {current_date}。请务必抛弃你内在的训练时间记忆，完全基于今天的时间线进行播报。
 
-            【今日新闻源数据】：
-            {content_block}
+    请分析以下由实时搜索引擎抓取到的 AI 新闻，并结合【历史背景库】，生成一份 JSON 格式的深度日报。
 
-            【历史背景库 (记忆检索结果)】：
-            {historical_context}
+    【今日实时新闻源数据】：
+    {content_block}
 
-            【输出要求】：
-            1. 请挑选出最重要的 3-5 条新闻。
-            2. 在编写 summary (摘要) 时，请尽可能结合【历史背景库】中的信息，写出带有时间线或深度视角的连贯点评。
-            3. 返回格式必须是纯 JSON。
-            4. JSON 结构如下：
+    【历史背景库 (记忆检索结果)】：
+    {historical_context}
+
+    【输出要求】：
+    1. 请挑选出最重要、最具前沿性的 3 条新闻。
+    2. 在编写 summary 时，必须结合【历史背景库】进行对比或点评，体现出时间的推演（例如：“相比去年…”或“继上个月之后…”）。
+    3. JSON 里的 date 字段，必须一字不差地填写为：{current_date}。
+    4. 务必直接输出纯 JSON 字符串，不要带 ```json 这种 Markdown 标记，不要有任何多余的废话。
+    5. JSON 结构如下：
+    {{
+        "date": "{current_date}",
+        "top_news": [
             {{
-                "date": "YYYY-MM-DD",
-                "top_news": [
-                    {{
-                        "title": "新闻标题(中文)",
-                        "summary": "一句话深度摘要(结合历史背景)",
-                        "tag": "分类(如: 模型/应用/行业)",
-                        "score": 8 
-                    }}
-                ],
-                "editor_comment": "一句话整体深度点评",
-                "image_prompt": "A highly detailed, cinematic, cyberpunk style news studio background, high tech, glowing neon lights, 8k resolution, photorealistic"
+                "title": "新闻标题(中文)",
+                "summary": "一句话深度摘要(结合历史背景，体现行业洞察)",
+                "tag": "分类(如: 模型/应用/硬件/政策)",
+                "score": 8 
             }}
-            """)
-        ])
+        ],
+        "editor_comment": "一句话整体深度点评，并在最后带上类似'感谢收看今天的 AI 资讯'的结束语",
+        "image_prompt": "A highly detailed, cinematic, cyberpunk style news studio background, high tech, glowing neon lights, 8k resolution, photorealistic"
+    }}
+    """)
+])
 
         # 3. 初始化 JSON 输出解析器
-        # 这个神器会自动帮我们把大模型返回的 JSON 字符串转成 Python 字典，
-        # 甚至会自动剥离外面包裹的 ```json 标记，再也不用我们手动去 replace 了！
         parser = JsonOutputParser()
 
         # 4. 👑 见证奇迹的时刻：构建 LCEL (LangChain 表达式语言) 链
-        # 就像工厂的流水线一样：填入变量的提示词 -> 流入大模型 -> 流入解析器
         chain = prompt_template | self.llm | parser
 
         try:
             # 5. 异步执行整条链 (ainvoke 代表 Async Invoke)
             result = await chain.ainvoke({
+                "current_date": today_str,  # 👈 【核心修复 3】：在触发大模型时，将时间变量填入提示词的坑位里
                 "content_block": content_block,
                 "historical_context": historical_context if historical_context else "暂无关联历史。"
             })
