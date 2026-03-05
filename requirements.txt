@@ -1,8 +1,25 @@
-<<<<<<< HEAD
-feedparser
+# --- Web 与 API 框架 ---
+fastapi
+uvicorn
+pydantic
+
+# --- AI 大脑与 RAG 向量记忆 ---
+langchain
+langchain-openai
+chromadb
 openai
-=======
+
+# --- 多模态视觉与媒体引擎 ---
+moviepy
+requests
+
+# --- 数据源与爬虫 ---
 feedparser
-openai
->>>>>>> 26174d9a8be5a7448b6af247006c1f895ac549ff
+
+# --- 工业级分布式高并发底座 ---
+celery
+redis
+gevent
+
+# --- 环境变量与基础工具 ---
 python-dotenv
