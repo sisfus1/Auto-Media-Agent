@@ -1,52 +1,63 @@
 import os
+import json
+import asyncio
 import uuid
-import asyncio # 确保有这个
-from fastapi import FastAPI, BackgroundTasks, HTTPException
-from fastapi.middleware.cors import CORSMiddleware # 【新增】导入跨域中间件
-from pydantic import BaseModel
-import uvicorn
+import shutil
+from datetime import datetime
+from fastapi import FastAPI, BackgroundTasks
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from app.db.vector_db import VectorDBManager
-# (确保你之前已经导入了 os)
+from pydantic import BaseModel
 
-# 导入你的服务逻辑
+# 导入我们自己写的服务模块
 from app.db.database import DatabaseManager
+from app.db.vector_db import VectorDBManager
 from app.services.llm import LLMService
 from app.services.media import MediaService
-from moviepy.editor import ColorClip
 
-app = FastAPI(title="Auto-Media-Agent API", version="0.4.0")
-# 【新增】配置 CORS，允许前端 5173 端口访问
+app = FastAPI()
+
+# 配置 CORS，允许 Vue3 前端跨域访问
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"], # 允许的请求来源
+    allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["*"], # 允许所有 HTTP 方法 (GET, POST 等)
-    allow_headers=["*"], # 允许所有请求头
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-# --- 1. 定义数据模型 (Pydantic) ---
+# 全局任务字典，模拟 Redis 状态存储 (V1.0 暂留，未来升级 Celery)
+TASK_STORE = {}
+
+# 【新增】在程序启动时，自动在根目录创建一个 test_videos 文件夹
+OUTPUT_DIR = "test_videos"
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
 class VideoTaskResponse(BaseModel):
     task_id: str
     status: str
-    message: str
 
-# 模拟一个内存中的任务状态字典（未来会被 Redis + Celery 替代）
-TASK_STORE = {}
-
-# --- 2. 核心业务逻辑封装为独立函数 ---
 def run_video_generation_pipeline(task_id: str):
-    """这是原本 main.py 中的核心逻辑，现在放到后台运行"""
+    """真正的多模态视频生成后台流水线"""
     TASK_STORE[task_id] = "RUNNING"
-    print(f"[{task_id}] 🚀 后台任务开始执行...")
+    print(f"\n[{task_id}] 🚀 后台任务开始执行...")
     
     try:
+        # 1. 初始化各项服务
         db = DatabaseManager()
         llm = LLMService()
         media = MediaService()
-        vector_db = VectorDBManager() # 【新增】实例化向量大脑
+        vector_db = VectorDBManager()
 
-        # 1. 获取最新数据 (传统数据库)
+        # 【核心改造：生成时间戳文件名及定义统一的输出路径】
+        current_time = datetime.now().strftime("%Y%m%d%H%M")
+        base_filename = f"{current_time}_{task_id[:4]}"
+        
+        audio_file_path = os.path.join(OUTPUT_DIR, f"{base_filename}.mp3")
+        bg_image_path = os.path.join(OUTPUT_DIR, f"{base_filename}.jpg")
+        video_file_path = os.path.join(OUTPUT_DIR, f"{base_filename}.mp4")
+
+        # 2. 获取最新数据 (传统关系型数据库)
         recent_news = db.get_recent_news(limit=5)
         if not recent_news:
             TASK_STORE[task_id] = "FAILED: 数据库为空"
@@ -54,101 +65,107 @@ def run_video_generation_pipeline(task_id: str):
             
         news_for_ai = [f"- {row[0]}: {row[1]}" for row in recent_news]
         
-        # ---------------------------------------------------------
-        # 【新增的 RAG 核心逻辑】
-        # 2.A 将今日新闻转化为向量存入大脑 (形成长期记忆)
+        # 3. 🧠 记忆检索 (RAG 核心逻辑)
         news_for_vector = []
         for row in recent_news:
             news_for_vector.append({
-                "id": str(row[0]),  # 简单起见，用标题当唯一 ID
+                "id": str(row[0]),
                 "text": f"标题: {row[0]} 内容: {row[1]}",
                 "metadata": {"source": "daily_fetch"}
             })
         vector_db.add_news_to_vector_db(news_for_vector)
 
-        # 2.B 从大脑中检索与今天头条最相关的历史记忆
-        # 我们用今天的第一条新闻标题作为查询词去搜索历史
         query_keyword = recent_news[0][0] if recent_news else "AI人工智能最新进展"
         historical_docs = vector_db.search_related_news(query_text=query_keyword, n_results=3)
         historical_context = "\n".join(historical_docs) if historical_docs else "暂无关联历史。"
-        # ---------------------------------------------------------
 
-        # 3. 带着历史记忆，调用大模型生成深度报告
-        import asyncio
+        # 4. 🤖 调用大模型生成深度报告与【绘画提示词】
+        print(f"[{task_id}] 🤖 大模型正在结合历史记忆深度思考...")
         report = asyncio.run(llm.generate_daily_report(news_for_ai, historical_context=historical_context))
         
-        if "top_news" not in report:
-            TASK_STORE[task_id] = "FAILED: AI 生成报告失败"
+        if "error" in report:
+            TASK_STORE[task_id] = f"FAILED: AI 生成报告失败 - {report['error']}"
             return
-            
-        # ... 接下来的拼接脚本、生成语音和视频代码保持完全不变 ...
-        # script = f"大家好，今天是{report.get('date')}。..."
-            
-        # 3. 拼接口播
-        script = f"大家好，今天是{report.get('date')}。{report.get('editor_comment')}。"
-        for i, item in enumerate(report['top_news']):
-            script += f"第{i+1}条：{item['title']}。{item['summary']}。"
         
-        # 4. 生成语音与视频
-        audio_file = media.generate_audio(script)
-        if not audio_file:
+        script_lines = [f"大家好，今天是{report.get('date', '今天')}。"]
+        for item in report.get('top_news', []):
+            script_lines.append(item.get('title', ''))
+            script_lines.append(item.get('summary', ''))
+        script_lines.append(report.get('editor_comment', '感谢收看。'))
+        script = "\n".join(script_lines)
+
+        image_prompt = report.get("image_prompt", "A high tech news studio, abstract data flow, 8k resolution, cinematic lighting")
+        print(f"[{task_id}] 💡 提取到的画面灵感: {image_prompt}")
+
+        # 5. 🎙️ 生成语音并归档
+        print(f"[{task_id}] 🎙️ 正在调用 TTS 生成语音...")
+        temp_audio = media.generate_audio(script)
+        if not temp_audio or not os.path.exists(temp_audio):
             TASK_STORE[task_id] = "FAILED: 语音生成失败"
             return
+            
+        # 将根目录生成的音频移动到 test_videos 文件夹并重命名
+        shutil.move(temp_audio, audio_file_path)
 
-        bg_image = "background.jpg"
-        if not os.path.exists(bg_image):
-            ColorClip(size=(1280, 720), color=(10, 20, 60), duration=5).save_frame(bg_image, t=1)
-
-        video_file = media.generate_video(audio_file, bg_image)
-        if video_file:
-            TASK_STORE[task_id] = f"SUCCESS: {os.path.abspath(video_file)}"
-            print(f"[{task_id}] 🎉 视频生成完成！")
-        else:
-            TASK_STORE[task_id] = "FAILED: 视频合成失败"
-
+        # 6. 🎨 生成视觉背景 (FLUX) 直接保存到 test_videos
+        print(f"[{task_id}] 🎨 正在调用云端 FLUX 模型生成动态视觉背景...")
+        generated_bg = media.generate_background_image(image_prompt, save_path=bg_image_path)
+        
+        # 7. 🎬 最终视频合成 (MoviePy)
+        print(f"[{task_id}] 🎬 剪辑引擎启动：将音频与视觉画面合成...")
+        from moviepy.editor import ImageClip, AudioFileClip, ColorClip
+        
+        try:
+            audio_clip = AudioFileClip(audio_file_path)
+            duration = audio_clip.duration
+            
+            if generated_bg and os.path.exists(generated_bg):
+                video_clip = ImageClip(generated_bg).set_duration(duration)
+            else:
+                print(f"[{task_id}] ⚠️ 生图失败，采用深蓝色纯色背景兜底。")
+                video_clip = ColorClip(size=(1280, 720), color=(10, 20, 60), duration=duration)
+                
+            final_video = video_clip.set_audio(audio_clip)
+            
+            # 视频保存到新的时间戳路径
+            final_video.write_videofile(video_file_path, fps=24, logger=None)
+            
+            audio_clip.close()
+            video_clip.close()
+            final_video.close()
+            
+            # 【核心改造：返回前端需要的网络链接，只拼文件名】
+            final_video_name = f"{base_filename}.mp4"
+            TASK_STORE[task_id] = f"SUCCESS: http://127.0.0.1:8000/api/videos/{final_video_name}"
+            print(f"[{task_id}] ✅ 任务大功告成！完美视听成品路径: {os.path.abspath(video_file_path)}")
+            
+        except Exception as e:
+            TASK_STORE[task_id] = f"ERROR: 视频渲染失败 - {str(e)}"
+            print(f"[{task_id}] ❌ 视频合成异常: {e}")
+            
     except Exception as e:
-        TASK_STORE[task_id] = f"ERROR: {str(e)}"
-    finally:
-        # 这里应该做一些资源清理，比如 db.close() 等
-        pass
+        TASK_STORE[task_id] = f"ERROR: 系统严重异常 - {str(e)}"
+        print(f"[{task_id}] ❌ 流水线崩溃: {e}")
 
-# --- 3. API 路由定义 ---
+# --- API 路由定义 ---
+
 @app.post("/api/tasks/generate_video", response_model=VideoTaskResponse)
 async def create_video_task(background_tasks: BackgroundTasks):
-    """
-    触发视频生成的接口。它会立即返回一个 task_id，而真正的生成过程在后台进行。
-    """
-    # 生成唯一任务 ID
-    task_id = str(uuid.uuid4())
+    task_id = str(uuid.uuid4())[:8]
     TASK_STORE[task_id] = "PENDING"
-    
-    # 将重任务放入 FastAPI 的后台队列中
     background_tasks.add_task(run_video_generation_pipeline, task_id)
-    
-    return VideoTaskResponse(
-        task_id=task_id, 
-        status="PENDING", 
-        message="视频生成任务已提交后台处理"
-    )
+    return {"task_id": task_id, "status": "PENDING"}
 
 @app.get("/api/tasks/{task_id}")
 async def get_task_status(task_id: str):
-    """前端轮询查询任务状态的接口"""
-    status = TASK_STORE.get(task_id)
-    if not status:
-        raise HTTPException(status_code=404, detail="Task not found")
+    status = TASK_STORE.get(task_id, "NOT_FOUND")
     return {"task_id": task_id, "status": status}
 
 @app.get("/api/videos/{filename}")
 async def get_video(filename: str):
-    """专门为前端提供视频流的接口"""
-    # 因为我们的视频直接生成在项目根目录下，所以直接查 filename
-    if not os.path.exists(filename):
-        raise HTTPException(status_code=404, detail="视频文件未找到或已被删除")
-    
-    # 返回视频文件，FastAPI 会自动处理视频的拖拽缓冲(流式传输)
-    return FileResponse(filename, media_type="video/mp4")
-
-if __name__ == "__main__":
-    # 启动命令: python api_main.py (或者 uvicorn api_main:app --reload)
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    """前端通过这个接口来获取并播放视频"""
+    # 告诉 FastAPI 去 test_videos 文件夹里找视频
+    file_path = os.path.join(os.getcwd(), OUTPUT_DIR, filename)
+    if os.path.exists(file_path):
+        return FileResponse(file_path, media_type="video/mp4")
+    return {"error": "视频文件不存在"}

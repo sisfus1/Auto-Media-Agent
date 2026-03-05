@@ -51,6 +51,7 @@ class LLMService:
                 }}
             ],
             "editor_comment": "一句话整体深度点评"
+            "image_prompt": "A highly detailed, cinematic, cyberpunk style news studio background, high tech, glowing neon lights, 8k resolution, photorealistic" # 👈 【新增这一行】请根据今日新闻的主题，生成一句纯英文的 AI 绘画提示词，用于生成视频背景图，要求画面极具视觉冲击力。
         }}
         """
 
