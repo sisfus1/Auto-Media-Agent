@@ -3,23 +3,30 @@ fastapi
 uvicorn
 pydantic
 
-# --- AI 大脑与 RAG 向量记忆 ---
+# --- AI 大脑与动态 RAG 记忆 ---
 langchain
 langchain-openai
+langchain-community
 chromadb
 openai
 
-# --- 多模态视觉与媒体引擎 ---
-moviepy
-requests
-
-# --- 数据源与爬虫 ---
+# --- 实时公网情报搜集 ---
+duckduckgo-search
+ddgs
 feedparser
+
+# --- 多模态视觉与音频合成引擎 ---
+moviepy==1.0.3
+requests
+edge-tts
+faster-whisper
+Pillow
+numpy
 
 # --- 工业级分布式高并发底座 ---
 celery
 redis
-gevent
+# gevent (已在 V1.0 架构中彻底废弃，拥抱原生多线程与协程的完美融合)
 
 # --- 环境变量与基础工具 ---
 python-dotenv

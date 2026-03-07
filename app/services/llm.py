@@ -87,7 +87,7 @@ class LLMService:
         try:
             # 5. 异步执行整条链 (ainvoke 代表 Async Invoke)
             result = await chain.ainvoke({
-                "current_date": today_str,  # 👈 【核心修复 3】：在触发大模型时，将时间变量填入提示词的坑位里
+                "current_date": today_str,
                 "content_block": content_block,
                 "historical_context": historical_context if historical_context else "暂无关联历史。"
             })
